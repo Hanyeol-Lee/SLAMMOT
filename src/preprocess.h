@@ -150,6 +150,24 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros::LivoxPointXyzitl,
     (uint8_t, line, line)
 )
 
+namespace velodyne_kitti
+{
+struct EIGEN_ALIGN16 Point
+{
+  PCL_ADD_POINT4D;
+  float intensity;
+  uint16_t ring;
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};
+}
+POINT_CLOUD_REGISTER_POINT_STRUCT(velodyne_kitti::Point,
+    (float, x, x)
+    (float, y, y)
+    (float, z, z)
+    (float, intensity, intensity)
+    (std::uint16_t, ring, ring)
+)
+
 class Preprocess
 {
   public:
@@ -170,12 +188,15 @@ class Preprocess
   int lidar_type, point_filter_num, N_SCANS, SCAN_RATE, time_unit;
   double blind;
   bool feature_enabled, given_offset_time;
+  bool undistortion_en;
+  bool kitti_mode;
   // ros::Publisher pub_full, pub_surf, pub_corn;
 
 private:
   void avia_handler(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg);
   void oust64_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &msg);
   void velodyne_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &msg);
+  void velodyne_kitti_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &msg);
   void mid360_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &msg);
   void default_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &msg);
   void give_feature(PointCloudXYZI &pl, vector<orgtype> &types);

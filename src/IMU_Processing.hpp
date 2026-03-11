@@ -58,6 +58,23 @@ class ImuProcess
   V3D cov_bias_acc;
   double first_lidar_time;
 
+  // External initialization (e.g., from KITTI ground truth)
+  bool use_external_init = false;
+  V3D ext_init_pos   = Zero3d;
+  V3D ext_init_vel   = Zero3d;
+  V3D ext_init_rpy   = Zero3d;
+  V3D ext_init_grav  = V3D(0.0, 0.0, G_m_s2);
+  bool ext_init_ready = false;
+
+  void set_external_init(const V3D &pos, const V3D &vel, const V3D &rpy, const V3D &grav)
+  {
+    ext_init_pos  = pos;
+    ext_init_vel  = vel;
+    ext_init_rpy  = rpy;
+    ext_init_grav = grav;
+    ext_init_ready = true;
+  }
+
  private:
   void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
   void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
@@ -346,7 +363,48 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
 
   if (imu_need_init_)
   {
-    /// The very first lidar frame
+    // Optional external initialization (e.g., KITTI ground truth)
+    if (use_external_init && ext_init_ready)
+    {
+      state_ikfom init_state = kf_state.get_x();
+      init_state.pos  = ext_init_pos;
+      init_state.vel  = ext_init_vel;
+      init_state.rot  = EulerToSO3(ext_init_rpy);
+      init_state.grav = S2(ext_init_grav);
+      init_state.offset_T_L_I = Lidar_T_wrt_IMU;
+      init_state.offset_R_L_I = Lidar_R_wrt_IMU;
+      kf_state.change_x(init_state);
+
+      esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = kf_state.get_P();
+      init_P.setIdentity();
+      // Attitude (rot): std = 1 deg -> var = (pi/180)^2
+      const double deg2rad = M_PI / 180.0;
+      init_P(3,3) = init_P(4,4) = init_P(5,5) = deg2rad * deg2rad;
+      init_P(6,6) = init_P(7,7) = init_P(8,8) = 0.00001;
+      init_P(9,9) = init_P(10,10) = init_P(11,11) = 0.00001;
+      // Velocity: std = 0.1 m/s -> var = 0.01
+      init_P(12,12) = init_P(13,13) = init_P(14,14) = 0.01;
+      init_P(15,15) = init_P(16,16) = init_P(17,17) = 0.0001;
+      init_P(18,18) = init_P(19,19) = init_P(20,20) = 0.001;
+      init_P(21,21) = init_P(22,22) = 0.00001;
+      kf_state.change_P(init_P);
+
+      last_imu_ = meas.imu.back();
+      imu_need_init_ = false;
+      ext_init_ready = false;
+
+      // IMU linear_acceleration is in m/s² (e.g. KITTI). Set mean_acc so that
+      // acc_avr * G_m_s2 / mean_acc.norm() = acc_avr (no extra scaling in UndistortPcl).
+      mean_acc = V3D(0, 0, -G_m_s2);
+
+      cov_acc = cov_acc_scale;
+      cov_gyr = cov_gyr_scale;
+      std::cout << "External IMU Initial Done" << std::endl;
+      fout_imu.open(DEBUG_FILE_DIR("imu.txt"),ios::out);
+      return;
+    }
+
+    /// The very first lidar frame (original gravity estimation)
     IMU_init(meas, kf_state, init_iter_num);
 
     imu_need_init_ = true;
@@ -362,8 +420,6 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
       cov_acc = cov_acc_scale;
       cov_gyr = cov_gyr_scale;
       std::cout << "IMU Initial Done" << std::endl;
-      // ROS_INFO("IMU Initial Done: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",\
-      //          imu_state.grav[0], imu_state.grav[1], imu_state.grav[2], mean_acc.norm(), cov_bias_gyr[0], cov_bias_gyr[1], cov_bias_gyr[2], cov_acc[0], cov_acc[1], cov_acc[2], cov_gyr[0], cov_gyr[1], cov_gyr[2]);
       fout_imu.open(DEBUG_FILE_DIR("imu.txt"),ios::out);
     }
 

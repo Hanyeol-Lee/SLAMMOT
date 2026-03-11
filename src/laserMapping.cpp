@@ -59,6 +59,8 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
@@ -86,6 +88,7 @@ condition_variable sig_buffer;
 
 string root_dir = ROOT_DIR;
 string map_file_path, lid_topic, imu_topic;
+string gps_vel_topic, gps_pos_topic;
 
 double res_mean_last = 0.05, total_residual = 0.0;
 double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
@@ -139,9 +142,20 @@ nav_msgs::msg::Path path;
 nav_msgs::msg::Odometry odomAftMapped;
 geometry_msgs::msg::Quaternion geoQuat;
 geometry_msgs::msg::PoseStamped msg_body_pose;
+nav_msgs::msg::Path path_gt;
+geometry_msgs::msg::PoseStamped msg_gt_pose;
+
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
+
+bool use_external_init = false;
+bool external_pose_got = false;
+bool external_vel_got  = false;
+bool external_pos_got  = false;
+V3D ext_rpy(Zero3d);
+V3D ext_vel(Zero3d);
+V3D ext_pos(Zero3d);
 
 void SigHandle(int sig)
 {
@@ -661,17 +675,13 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
 void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
 {
     set_posestamp(msg_body_pose);
-    msg_body_pose.header.stamp = get_ros_time(lidar_end_time); // ros::Time().fromSec(lidar_end_time);
+    msg_body_pose.header.stamp = get_ros_time(lidar_end_time);
     msg_body_pose.header.frame_id = "camera_init";
 
-    /*** if path is too large, the rvis will crash ***/
-    static int jjj = 0;
-    jjj++;
-    if (jjj % 10 == 0) 
-    {
-        path.poses.push_back(msg_body_pose);
-        pubPath->publish(path);
-    }
+    path.poses.push_back(msg_body_pose);
+    path.header.stamp = get_ros_time(lidar_end_time);
+    path.header.frame_id = "camera_init";
+    pubPath->publish(path);
 }
 
 void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data)
@@ -808,6 +818,8 @@ public:
         this->declare_parameter<string>("map_file_path", "");
         this->declare_parameter<string>("common.lid_topic", "/livox/lidar");
         this->declare_parameter<string>("common.imu_topic", "/livox/imu");
+        this->declare_parameter<string>("common.gps_vel_topic", "/kitti/oxts/gps/vel");
+        this->declare_parameter<string>("common.gps_pos_topic", "/kitti/oxts/gps/local_pos");
         this->declare_parameter<bool>("common.time_sync_en", false);
         this->declare_parameter<double>("common.time_offset_lidar_to_imu", 0.0);
         this->declare_parameter<double>("filter_size_corner", 0.5);
@@ -820,11 +832,14 @@ public:
         this->declare_parameter<double>("mapping.acc_cov", 0.1);
         this->declare_parameter<double>("mapping.b_gyr_cov", 0.0001);
         this->declare_parameter<double>("mapping.b_acc_cov", 0.0001);
+        this->declare_parameter<bool>("mapping.use_external_init", false);
         this->declare_parameter<double>("preprocess.blind", 0.01);
         this->declare_parameter<int>("preprocess.lidar_type", AVIA);
         this->declare_parameter<int>("preprocess.scan_line", 16);
         this->declare_parameter<int>("preprocess.timestamp_unit", US);
         this->declare_parameter<int>("preprocess.scan_rate", 10);
+        this->declare_parameter<bool>("preprocess.undistortion_en", true);
+        this->declare_parameter<bool>("preprocess.kitti_mode", false);
         this->declare_parameter<int>("point_filter_num", 2);
         this->declare_parameter<bool>("feature_extract_enable", false);
         this->declare_parameter<bool>("runtime_pos_log_enable", false);
@@ -844,6 +859,8 @@ public:
         this->get_parameter_or<string>("map_file_path", map_file_path, "");
         this->get_parameter_or<string>("common.lid_topic", lid_topic, "/livox/lidar");
         this->get_parameter_or<string>("common.imu_topic", imu_topic,"/livox/imu");
+        this->get_parameter_or<string>("common.gps_vel_topic", gps_vel_topic, "/kitti/oxts/gps/vel");
+        this->get_parameter_or<string>("common.gps_pos_topic", gps_pos_topic, "/kitti/oxts/gps/local_pos");
         this->get_parameter_or<bool>("common.time_sync_en", time_sync_en, false);
         this->get_parameter_or<double>("common.time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
         this->get_parameter_or<double>("filter_size_corner",filter_size_corner_min,0.5);
@@ -856,11 +873,14 @@ public:
         this->get_parameter_or<double>("mapping.acc_cov",acc_cov,0.1);
         this->get_parameter_or<double>("mapping.b_gyr_cov",b_gyr_cov,0.0001);
         this->get_parameter_or<double>("mapping.b_acc_cov",b_acc_cov,0.0001);
+        this->get_parameter_or<bool>("mapping.use_external_init", use_external_init, false);
         this->get_parameter_or<double>("preprocess.blind", p_pre->blind, 0.01);
         this->get_parameter_or<int>("preprocess.lidar_type", p_pre->lidar_type, AVIA);
         this->get_parameter_or<int>("preprocess.scan_line", p_pre->N_SCANS, 16);
         this->get_parameter_or<int>("preprocess.timestamp_unit", p_pre->time_unit, US);
         this->get_parameter_or<int>("preprocess.scan_rate", p_pre->SCAN_RATE, 10);
+        this->get_parameter_or<bool>("preprocess.undistortion_en", p_pre->undistortion_en, true);
+        this->get_parameter_or<bool>("preprocess.kitti_mode", p_pre->kitti_mode, false);
         this->get_parameter_or<int>("point_filter_num", p_pre->point_filter_num, 2);
         this->get_parameter_or<bool>("feature_extract_enable", p_pre->feature_enabled, false);
         this->get_parameter_or<bool>("runtime_pos_log_enable", runtime_pos_log, 0);
@@ -900,6 +920,9 @@ public:
         p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
         p_imu->set_acc_bias_cov(V3D(b_acc_cov, b_acc_cov, b_acc_cov));
 
+        // Configure external initialization (e.g., KITTI ground truth)
+        p_imu->use_external_init = use_external_init;
+
         fill(epsi, epsi+23, 0.001);
         kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
@@ -927,12 +950,22 @@ public:
             sub_pcl_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
         }
         sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 10, imu_cbk);
+        if (use_external_init)
+        {
+            sub_gps_vel_ = this->create_subscription<geometry_msgs::msg::TwistStamped>(
+                gps_vel_topic, 10,
+                std::bind(&LaserMappingNode::gps_vel_callback, this, std::placeholders::_1));
+            sub_gps_pos_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+                gps_pos_topic, 10,
+                std::bind(&LaserMappingNode::gps_pos_callback, this, std::placeholders::_1));
+        }
         pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
         pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
+        pubPathGt_ = this->create_publisher<nav_msgs::msg::Path>("/path_gt", 20);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
         //------------------------------------------------------------------------------------------------------
@@ -964,6 +997,12 @@ private:
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
                 flg_first_scan = false;
+                // Set external initialization once we have all ground truth values
+                if (use_external_init && external_vel_got && external_pos_got)
+                {
+                    V3D grav(0.0, 0.0, G_m_s2);
+                    p_imu->set_external_init(ext_pos, ext_vel, ext_rpy, grav);
+                }
                 return;
             }
 
@@ -1129,15 +1168,62 @@ private:
     }
 
 private:
+    void gps_vel_callback(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
+    {
+        if (external_vel_got)
+            return;
+        // angular: forward (x), left (y), up (z)
+        double roll  = msg->twist.angular.x;
+        double pitch = -msg->twist.angular.y;
+        double yaw   = -msg->twist.angular.z;
+        ext_rpy << roll, pitch, yaw;
+
+        // linear velocity: follow same sign convention
+        double vx = msg->twist.linear.x;      // forward
+        double vy = -msg->twist.linear.y;     // -left
+        double vz = -msg->twist.linear.z;     // -up
+        ext_vel << vx, vy, vz;
+
+        external_vel_got = true;
+    }
+
+    void gps_pos_callback(const geometry_msgs::msg::PointStamped::SharedPtr msg)
+    {
+        if (use_external_init && !external_pos_got)
+        {
+            ext_pos << msg->point.x, msg->point.y, msg->point.z;
+            external_pos_got = true;
+        }
+
+        // Append every message to ground-truth path for visualization
+        msg_gt_pose.pose.position.x = msg->point.x;
+        msg_gt_pose.pose.position.y = msg->point.y;
+        msg_gt_pose.pose.position.z = msg->point.z;
+        msg_gt_pose.pose.orientation.w = 1.0;
+        msg_gt_pose.pose.orientation.x = 0.0;
+        msg_gt_pose.pose.orientation.y = 0.0;
+        msg_gt_pose.pose.orientation.z = 0.0;
+        msg_gt_pose.header = msg->header;
+        msg_gt_pose.header.frame_id = "camera_init";
+        path_gt.header.frame_id = "camera_init";
+        path_gt.header.stamp = msg->header.stamp;
+        path_gt.poses.push_back(msg_gt_pose);
+        if (pubPathGt_)
+            pubPathGt_->publish(path_gt);
+    }
+
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPathGt_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
+    rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr sub_gps_vel_;
+    rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr sub_gps_pos_;
 
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::TimerBase::SharedPtr timer_;

@@ -123,4 +123,15 @@ vect3 SO3ToEuler(const SO3 &orient)
 	return euler_ang;
 }
 
+/** Euler angles (roll, pitch, yaw) in radians -> SO3. Accepts vect3 or Eigen::Vector3d (e.g. V3D). */
+template<typename Vec3>
+inline SO3 EulerToSO3(const Vec3 &rpy_rad)
+{
+	Eigen::Matrix3d R =
+		(Eigen::AngleAxisd(rpy_rad(0), Eigen::Vector3d::UnitX())
+		* Eigen::AngleAxisd(rpy_rad(1), Eigen::Vector3d::UnitY())
+		* Eigen::AngleAxisd(rpy_rad(2), Eigen::Vector3d::UnitZ())).toRotationMatrix();
+	return SO3(R);
+}
+
 #endif
