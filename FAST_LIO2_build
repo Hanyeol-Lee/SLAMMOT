@@ -1,0 +1,17 @@
+FAST-LIO2 build
+
+
+
+```
+source ~/livox_pkg/ws_livox/install/setup.bash
+   colcon build --symlink-install --cmake-args \
+  -DCMAKE_C_COMPILER=/usr/bin/gcc \
+  -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+  -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+  -DBoost_NO_SYSTEM_PATHS=OFF \
+  -DBOOST_ROOT=/usr \
+  -DBoost_INCLUDE_DIR=/usr/include
+```
+
+
+
